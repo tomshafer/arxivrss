@@ -21,7 +21,7 @@ from defusedxml.ElementTree import fromstring as xml_fromstring
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("arxivrss")
 
-__version__ = "0.0.1"
+__version__ = "0.0.2-devel"
 
 # RSS parsing namespaces
 _NS = {"rss": "http://purl.org/rss/1.0/", "dc": "http://purl.org/dc/elements/1.1/"}
@@ -44,7 +44,11 @@ def process_arxiv_feeds(
         path = os.path.join(output_dir, f"{feed}.xml")
         logger.info("[%s] Writing to %s", feed, path)
         with open(path, "wb") as f:
-            f.write(ET.tostring(feeds[feed]._xml))
+            f.write(
+                b'<?xml version="1.0" encoding="UTF-8"?>'
+                + b"\n\n"
+                + ET.tostring(feeds[feed]._xml)
+            )
 
 
 class Feed:
