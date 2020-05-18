@@ -30,7 +30,7 @@ from lxml.etree import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("arxivrss")
 
-__version__ = "0.0.2"
+__version__ = "0.0.3-devel"
 
 # RSS parsing namespaces
 _NS = {"rss": "http://purl.org/rss/1.0/", "dc": "http://purl.org/dc/elements/1.1/"}
