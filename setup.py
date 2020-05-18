@@ -22,5 +22,5 @@ setup(
     author_email="contact@tshafer.com",
     license="MIT",
     py_modules=["arxivrss"],
-    install_requires=["defusedxml", "requests"],
+    install_requires=["lxml", "requests"],
 )

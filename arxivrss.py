@@ -4,6 +4,11 @@
 2. Build a list of entries in each feed
 3. Delete unwanted entries from each feed
 4. Export the remaining entries.
+
+TODO:
+  1. Simplify the deletion logic
+  2. Clean up the copies
+  3. Clen up the <li> tags that I'm not deleting yet
 """
 
 import argparse as ap
@@ -13,15 +18,19 @@ import os
 import re
 from collections import OrderedDict
 from typing import List, Tuple, Union
-from xml.etree import ElementTree as ET  # noqa: S405
 
 import requests
-from defusedxml.ElementTree import fromstring as xml_fromstring
+from lxml.etree import (
+    Element,
+    ElementTree,
+    fromstring as xml_fromstring,
+    tostring as xml_tostring,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("arxivrss")
 
-__version__ = "0.0.2-devel"
+__version__ = "0.0.2"
 
 # RSS parsing namespaces
 _NS = {"rss": "http://purl.org/rss/1.0/", "dc": "http://purl.org/dc/elements/1.1/"}
@@ -37,18 +46,37 @@ def process_arxiv_feeds(
         output_dir (str): where to write the updated XML files
     """
     feeds = OrderedDict({s: Feed(fetch_arxiv_xml(s), s) for s in section_codes})
+
+    counts = {s: {"pre": len(feeds[s].articles)} for s in feeds}
+
     feeds = remove_updated_articles(feeds)
     feeds = deduplicate_feeds(feeds)
     feeds = match_xml_to_articles(feeds)
+
+    for s in feeds:
+        counts[s]["post"] = len(feeds[s].articles)
+        logger.info(
+            "[%s] Final result: pre %d, post %d; reduction %d (%.1f%%)",
+            s,
+            counts[s]["pre"],
+            counts[s]["post"],
+            counts[s]["pre"] - counts[s]["post"],
+            100 * (1 - counts[s]["post"] / counts[s]["pre"]),
+        )
+
     for feed in feeds:
         path = os.path.join(output_dir, f"{feed}.xml")
-        logger.info("[%s] Writing to %s", feed, path)
-        with open(path, "wb") as f:
-            f.write(
-                b'<?xml version="1.0" encoding="UTF-8"?>'
-                + b"\n\n"
-                + ET.tostring(feeds[feed]._xml)
-            )
+        write_feed(xml=feeds[feed]._xml, subject="feed", path=path)
+
+    num_pre = sum(counts[s]["pre"] for s in feeds)
+    num_post = sum(counts[s]["post"] for s in feeds)
+    logger.info(
+        "TOTAL Final result: pre %d, post %d; reduction %d (%.1f%%)",
+        num_pre,
+        num_post,
+        num_pre - num_post,
+        100 * (1 - num_post / num_pre),
+    )
 
 
 class Feed:
@@ -59,17 +87,17 @@ class Feed:
             entries and Article objects to facilitate deduplication.
     """
 
-    def __init__(self, xml: ET.Element, subject: str) -> None:
+    def __init__(self, xml: Element, subject: str) -> None:
         """Create a Feed from XML.
 
         Args:
             xml (Element): the root XML of a feed
         """
-        self._xml = xml
+        self._xml = copy.deepcopy(xml)
         self.subject = subject
         self.articles = OrderedDict()
 
-        items = xml.findall("rss:item", namespaces=_NS)
+        items = self._xml.findall("rss:item", namespaces=_NS)
         for xml_article in items:
             self.articles[Article(xml_article)] = xml_article
 
@@ -91,13 +119,14 @@ class Article:
         updated (bool): is the RSS entry article an article update?
     """
 
-    def __init__(self, xml: ET.Element) -> None:
+    def __init__(self, xml: Element) -> None:
         """Create an Article from an RSS item.
 
         Args:
             xml (Element): the XML entry for the article
         """
-        self._xml = xml
+        self._xml = xml  # Not a copy -- it points back to its container
+
         (
             self.title,
             self.id,
@@ -111,7 +140,7 @@ class Article:
         return f"<Article({self.id}v{self.version}, [{self.subject}])>"
 
     @classmethod
-    def parse_title(cls, xml: ET.Element):
+    def parse_title(cls, xml: Element):
         """Extract the title, section, ID, and updatedness from the title."""
         text = xml.findtext("rss:title", namespaces=_NS)
         if not text:
@@ -132,7 +161,7 @@ class Article:
         return title.strip(), axid.strip(), int(version), subject.strip(), updated
 
 
-def fetch_arxiv_xml(section_code: str) -> ET.Element:
+def fetch_arxiv_xml(section_code: str) -> ElementTree:
     """Download an arXiv RSS file given its section code."""
     logger.info("[%s] Collecting subject", section_code)
     r = requests.get(f"http://export.arxiv.org/rss/{section_code}")
@@ -144,14 +173,14 @@ def remove_updated_articles(
     feeds: "OrderedDict[str, Feed]",
 ) -> "OrderedDict[str, Feed]":
     """Remove any updated articles from feeds."""
-    feeds = copy.deepcopy(feeds)
+    feeds = copy.copy(feeds)
     for subject in feeds:
         feeds[subject] = _remove_updated(feeds[subject])
     return feeds
 
 
 def _remove_updated(feed: Feed) -> Feed:
-    feed = copy.deepcopy(feed)
+    feed = copy.copy(feed)
     to_remove = []
     num_pre = len(feed.articles)
     for article in feed.articles:
@@ -179,7 +208,7 @@ def deduplicate_feeds(feeds: "OrderedDict[str, Feed]") -> "OrderedDict[str, Feed
     """
     if len(feeds) < 2:
         return feeds
-    feeds = copy.deepcopy(feeds)
+    feeds = copy.copy(feeds)
     feeds = _clean_up_crosses(feeds)
     feeds = _deduplicate_in_order(feeds)
     return feeds
@@ -187,7 +216,7 @@ def deduplicate_feeds(feeds: "OrderedDict[str, Feed]") -> "OrderedDict[str, Feed
 
 def _clean_up_crosses(feeds: "OrderedDict[str, Feed]") -> "OrderedDict[str, Feed]":
     # Remove cross-posts if the main subject is in our list
-    feeds = copy.deepcopy(feeds)
+    feeds = copy.copy(feeds)
     subjects = set(feeds)
     for subj in feeds:
         to_remove = []
@@ -209,7 +238,7 @@ def _clean_up_crosses(feeds: "OrderedDict[str, Feed]") -> "OrderedDict[str, Feed
 
 
 def _deduplicate_in_order(feeds: "OrderedDict[str, Feed]") -> "OrderedDict[str, Feed]":
-    feeds = copy.deepcopy(feeds)
+    feeds = copy.copy(feeds)
     # Remove duplicated articles, going in order of the feed subjects
     queue = set()
     for subj in feeds:
@@ -235,14 +264,14 @@ def _deduplicate_in_order(feeds: "OrderedDict[str, Feed]") -> "OrderedDict[str, 
 
 def match_xml_to_articles(feeds: "OrderedDict[str, Feed]") -> "OrderedDict[str, Feed]":
     """Sync the internal XML representation to the Articles representation."""
-    feeds = copy.deepcopy(feeds)
+    feeds = copy.copy(feeds)
     for subj in feeds:
         feeds[subj] = _match_xml_to_articles(feeds[subj])
     return feeds
 
 
 def _match_xml_to_articles(feed: Feed) -> Feed:
-    feed = copy.deepcopy(feed)
+    feed = copy.copy(feed)
     # Identify what to delete from the XML
     num_pre = len(feed._xml.findall("rss:item", namespaces=_NS))
     to_remove = set(feed._xml.findall("rss:item", namespaces=_NS))
@@ -258,6 +287,24 @@ def _match_xml_to_articles(feed: Feed) -> Feed:
         num_post,
     )
     return feed
+
+
+def write_feed(xml: ElementTree, subject: str, path: str) -> None:
+    """Write the XML to output."""
+    logger.info("[%s] Writing to %s", subject, path)
+    with open(path, "w") as f:
+        f.write(
+            xml_tostring(
+                xml,
+                encoding="unicode",
+                doctype='<?xml version="1.0" encoding="UTF-8"?>',
+            )
+        )
+        # f.write(
+        #     '<?xml version="1.0" encoding="UTF-8"?>'
+        #     + "\n\n"
+        #     + ET.tostring(feeds[feed]._xml, encoding="unicode")
+        # )
 
 
 def _extract_regex_matches(rx, text, groups):
