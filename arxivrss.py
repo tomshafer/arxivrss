@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("arxivrss")
 
 
-__version__ = "0.0.3"
+__version__ = "0.0.4-devel"
 
 _XML_NAMESPACES = {
     "dc": "http://purl.org/dc/elements/1.1/",
