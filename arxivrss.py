@@ -90,23 +90,27 @@ class Article:
 
 class Formatter:
     """Formatters replace an Article's XML in-place."""
+
     def __call__(self, article: Article) -> etree.Element:
         raise NotImplementedError
 
 
 class NoopFormatter(Formatter):
     """Do nothing by default."""
+
     def __call__(self, article: Article) -> etree.Element:
         return article.xml
 
 
 class LinkTitleFormatter(Formatter):
     """Provide direct PDF links and better titles."""
+
     def __call__(self, article: Article) -> etree.Element:
         # Update the link
         link = article.xml.find("rss:link", _XML_NAMESPACES)
         link.text = link.text.replace("http://", "https://")
         link.text = link.text.replace("/abs/", "/pdf/") + ".pdf"
+        article.xml.attrib["{%s}about" % _XML_NAMESPACES["rdf"]] = link.text
         # Update the title
         title = article.xml.find("rss:title", _XML_NAMESPACES)
         title.text = f"[{article.subject}] {article.title}"
@@ -115,17 +119,17 @@ class LinkTitleFormatter(Formatter):
 
 class LinkTitleDescFormatter(LinkTitleFormatter):
     """Provide direct PDF links, better titles, and updated descriptions."""
+
     def __call__(self, article: Article) -> etree.Element:
         # Get the title and link fixes
         article.xml = super().__call__(article)
         # Do the article reformatting
         descr = article.xml.find("rss:description", _XML_NAMESPACES)
         descr.text = (
-            "\n"
-            + f'<p><a href="https://arxiv.org/abs/{article.arxiv_id}">'
-            + "arXiv abstract page</a>)</p>"
+            descr.text
             + "\n\n"
-            + descr.text
+            + f'<p><a href="https://arxiv.org/abs/{article.arxiv_id}">'
+            + "arXiv abstract page</a></p>"
         )
         return article.xml
 
