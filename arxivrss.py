@@ -12,7 +12,7 @@ import logging
 import os
 import re
 from collections import OrderedDict
-from typing import Iterable, List, NamedTuple, Tuple, Union
+from typing import Iterable, List, Optional, Pattern, Tuple, Union
 
 import requests
 from lxml import etree
@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("arxivrss")
 
 
-__version__ = "0.0.4-devel"
+__version__ = "0.1.0"
 
 _XML_NAMESPACES = {
     "dc": "http://purl.org/dc/elements/1.1/",
@@ -30,12 +30,22 @@ _XML_NAMESPACES = {
 }
 
 
-class Article(NamedTuple):
-    title: str
-    arxiv_id: str
-    subject: str
-    updated: bool = False
-    version: int = 1
+class Article:
+    def __init__(
+        self,
+        title: str,
+        arxiv_id: str,
+        subject: str,
+        xml: etree.Element,
+        updated: bool = False,
+        version: int = 1,
+    ):
+        self.title = title
+        self.arxiv_id = arxiv_id
+        self.subject = subject
+        self.xml = xml  # XML _points_ to the source
+        self.updated = updated
+        self.version = version
 
     def __repr__(self):
         return f"<Article[{self.subject}] id: {self.arxiv_id}>"
@@ -46,7 +56,7 @@ class Article(NamedTuple):
         if not text:
             raise ValueError(f"could not extract article title: '{text}'")
 
-        def _extract_regex_matches(rx, text, groups):
+        def _extract_regex_matches(rx: Pattern, text: str, groups: Tuple[int, ...]):
             test = rx.search(text)
             if not test:
                 raise ValueError(f'no matches for regex "{rx}"')
@@ -74,7 +84,50 @@ class Article(NamedTuple):
             subject=subject.strip(),
             updated=updated,
             version=int(version),
+            xml=xml,
         )
+
+
+class Formatter:
+    """Formatters replace an Article's XML in-place."""
+    def __call__(self, article: Article) -> etree.Element:
+        raise NotImplementedError
+
+
+class NoopFormatter(Formatter):
+    """Do nothing by default."""
+    def __call__(self, article: Article) -> etree.Element:
+        return article.xml
+
+
+class LinkTitleFormatter(Formatter):
+    """Provide direct PDF links and better titles."""
+    def __call__(self, article: Article) -> etree.Element:
+        # Update the link
+        link = article.xml.find("rss:link", _XML_NAMESPACES)
+        link.text = link.text.replace("http://", "https://")
+        link.text = link.text.replace("/abs/", "/pdf/") + ".pdf"
+        # Update the title
+        title = article.xml.find("rss:title", _XML_NAMESPACES)
+        title.text = f"[{article.subject}] {article.title}"
+        return article.xml
+
+
+class LinkTitleDescFormatter(LinkTitleFormatter):
+    """Provide direct PDF links, better titles, and updated descriptions."""
+    def __call__(self, article: Article) -> etree.Element:
+        # Get the title and link fixes
+        article.xml = super().__call__(article)
+        # Do the article reformatting
+        descr = article.xml.find("rss:description", _XML_NAMESPACES)
+        descr.text = (
+            "\n"
+            + f'<p><a href="https://arxiv.org/abs/{article.arxiv_id}">'
+            + "arXiv abstract page</a>)</p>"
+            + "\n\n"
+            + descr.text
+        )
+        return article.xml
 
 
 class Feed:
@@ -102,7 +155,11 @@ class Feed:
         for article in to_remove:
             self.remove_article(article)
 
-    def write_xml(self, dest: str) -> None:
+    def write_xml(self, dest: str, formatter: Optional[Formatter] = None) -> None:
+        if not formatter:
+            formatter = NoopFormatter()
+        for article in self.articles:
+            article.xml = formatter(article)
         logger.info("[%s] Writing to %s", self.subject, dest)
         with open(dest, "w") as f:
             f.write(
@@ -205,7 +262,7 @@ def process_arxiv_feeds(
 
     for feed in feeds:
         path = os.path.join(output_dir, f"{feed}.xml")
-        feeds[feed].write_xml(path)
+        feeds[feed].write_xml(path, LinkTitleDescFormatter())
 
     num_pre = sum(counts[s]["pre"] for s in feeds)
     num_post = sum(counts[s]["post"] for s in feeds)
